@@ -426,7 +426,7 @@ require("yaml")
 require("data.table")
 
 ## source(paste(Sys.getenv("BASEDIR"), "/myscript/Rscripts/rmd/netRepurpose/Functions/All_Functions.v3.R",sep = ""))
-source("/fs0/chenr6/chenr6/myscript/Rscripts/rmd/netRepurpose/Functions/All_Functions.v2.R")
+source("/fs0/chenr6/chenr6/myscript/Rscripts/mypkg/FlexNet/All_Functions.R")
 
 opt$config <- read_yaml(file = opt$yaml)
 if(opt$verbose)
