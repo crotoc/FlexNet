@@ -47,7 +47,8 @@ suppressMessages(using("parallel"))
 
 if(!dir.exists(opt$dir_out)) dir.create(opt$dir_out,showWarnings=T,recursive=T)
 
-print(opt$dir_out)
+if(opt$verbose)
+    message(opt$dir_out)
 
 
 if(opt$verbose){
@@ -66,6 +67,7 @@ parser_script$add_argument("--saveIntermediate", default="NULL",dest="saveInterm
 parser_script$add_argument("--weighted", action="store_true",dest="weighted", default=FALSE,help="weighted is [default %(default)s]")
 parser_script$add_argument("--max_iter", type="integer", default=1000,help="max_iter [default %(default)s]", metavar="number")
 parser_script$add_argument("--Seed.File.List", default="NULL",dest="Seed.File.List",help = "Seed.File.List is [default \"%(default)s\"]")
+parser_script$add_argument("--Bipartite.LoadedGeneLayers.LoadedDiseaseLayers", default="NULL",dest="Bipartite.LoadedGeneLayers.LoadedDiseaseLayers",help = "Bipartite.LoadedGeneLayers.LoadedDiseaseLayers is [default \"%(default)s\"]")
 
 if(!is.null(opt$cmdArgs)){
     opt_script <- addArg(parser_script,c("General"))$parse_known_args(opt$cmdArgs)[[1]]
@@ -389,7 +391,7 @@ FlexNet <- function(opt){
         ## Seeds_Score$Score %>% sum
 
         if(opt$verbose)
-            print(Seeds_Score)
+            message(paste0(capture.output(Seeds_Score), collapse = "\n"))
 
         if(opt$verbose)
             message("STEP: ","Performing Random Walk...")
@@ -440,6 +442,9 @@ if(opt$saveIntermediate != "NULL"){
 
 if(opt$Seed.File.List !="NULL"){
     opt$config$Seed.File.List <- opt$Seed.File.List
+}
+if(opt$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers!="NULL"){
+    opt$config$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers <- opt$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers
 }
 
 for(cmd in opt$cmd){
