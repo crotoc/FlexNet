@@ -188,7 +188,7 @@ get.adj.multiplex.by.networkid <- function(NetworkID,config,returnGraph=F){
     ## We save N_Gene as the number of Nodes in all the layers (After adding those that were missing.)
     N <- Get.Number.Nodes(Layers)
     L <- length(Layers)
-    LayerName <- names(layers_list)
+    LayerName <- gsub(".mat.origin.*","",names(layers_list),perl =T) %>% gsub("\\.","::",.,perl =T)
 
     ## get adjacency matrix before applying delta
     AdjacencyMatrix <- lapply(1:L,function(i){
@@ -300,13 +300,13 @@ Get.Number.Nodes <- function(Layers_Allnodes) {
 #### #### #### #### #### #### #### #### #### #### #### #### #### #### #### ####
 
 colNorm <- function(AdjacencyMatrix){
-    AdjacencyMatrix@x <- AdjacencyMatrix@x / rep.int(colSums(AdjacencyMatrix), diff(AdjacencyMatrix@p))
+    AdjacencyMatrix@x <- AdjacencyMatrix@x / rep.int(ifelse(colSums(AdjacencyMatrix)==0,1,colSums(AdjacencyMatrix)), diff(AdjacencyMatrix@p))
     AdjacencyMatrix
 }
 
 rowNorm <- function(AdjacencyMatrix){
     AdjacencyMatrix <- t(AdjacencyMatrix)
-    AdjacencyMatrix@x <- AdjacencyMatrix@x / rep.int(colSums(AdjacencyMatrix), diff(AdjacencyMatrix@p))
+    AdjacencyMatrix@x <- AdjacencyMatrix@x / rep.int(ifelse(colSums(AdjacencyMatrix)==0,1,colSums(AdjacencyMatrix)), diff(AdjacencyMatrix@p))
     t(AdjacencyMatrix)
 }
 
@@ -321,6 +321,7 @@ get.supra.adj.multiplex.by.networkid <- function(NetworkID,AdjacencyMatrixList,c
     ## delta_allow_mat is generated to describe which layer can jump to any other layers and which layer can only jump a subset of layers.
     
     Adjacency_Layer_list <- AdjacencyMatrixList[[paste0(NetworkID,"_",NetworkID)]]$AdjacencyMatrix
+    Adjacency_Layer_list_name <- AdjacencyMatrixList[[paste0(NetworkID,"_",NetworkID)]]$LayerName
     delta <- AdjacencyMatrixList[[paste0(NetworkID,"_",NetworkID)]]$delta
     delta_allow <- AdjacencyMatrixList[[paste0(NetworkID,"_",NetworkID)]]$delta_allow
     N <- AdjacencyMatrixList[[paste0(NetworkID,"_",NetworkID)]]$N
@@ -413,7 +414,7 @@ get.supra.adj.multiplex.by.networkid <- function(NetworkID,AdjacencyMatrixList,c
 
     if(opt$verbose){
         message("STEP: ","nomalized delta_allow_matrix is :\n")
-        view(delta_allow_mat,10)
+        view(delta_allow_mat)
     }
 
     
@@ -431,7 +432,7 @@ get.supra.adj.multiplex.by.networkid <- function(NetworkID,AdjacencyMatrixList,c
 
         ## We fill the diagonal blocks with the adjacencies matrix of each layer.
         if(L>1){
-            rownames(SupraAdjacencyMatrixList[[i]]) <- paste(rownames(Adjacency_Layer),i,sep="_")
+            rownames(SupraAdjacencyMatrixList[[i]]) <- paste(rownames(Adjacency_Layer),Adjacency_Layer_list_name[i],sep="::")
         }else{
             rownames(SupraAdjacencyMatrixList[[i]]) <- rownames(Adjacency_Layer)
         }
@@ -609,7 +610,7 @@ get.adj.bipartite.by.networkid <- function(Bipartite_NetworkID,AdjacencyMatrixLi
 #### #### #### #### #### #### #### #### #### #### #### #### #### #### #### ####
 
 ## universal version of expand bipartite
-expand.bipartite.graph.universal <- function(Number_Type_1,Number_Layers_Type_1,Number_Type_2,Number_Layers_Type_2,Bipartite_matrix){
+expand.bipartite.graph.universal <- function(Number_Type_1,Number_Layers_Type_1,Number_Type_2,Number_Layers_Type_2,LayerName_Type_1, LayerName_Type_2, Bipartite_matrix){
     ## The resulting matrix should be with dimension of  (Number_Type_1 * Number_Layers_Type_1) * (Number_Type_2 * Number_Layers_Type_2)
 
     ## Genrate matrix of  Number_Type_1 * (Number_Type_2 * Number_Layers_Type_2)
@@ -619,12 +620,12 @@ expand.bipartite.graph.universal <- function(Number_Type_1,Number_Layers_Type_1,
     SupraBipartiteMatrix <-  do.call("rbind",rep(list(SupraBipartiteMatrix),Number_Layers_Type_1))
 
     if(Number_Layers_Type_1>1){
-        Row_Node_Names <- paste(rep(rownames(Bipartite_matrix),Number_Layers_Type_1),rep(1:Number_Layers_Type_1, each = Number_Type_1),sep="_")
+        Row_Node_Names <- paste(rep(rownames(Bipartite_matrix),Number_Layers_Type_1),rep(LayerName_Type_1, each = Number_Type_1),sep="::")
     }else{
         Row_Node_Names <- rownames(Bipartite_matrix)
     }
     if(Number_Layers_Type_2>1){
-        Col_Node_Names <- paste(rep(colnames(Bipartite_matrix),Number_Layers_Type_2),rep(1:Number_Layers_Type_2, each = Number_Type_2),sep="_")
+        Col_Node_Names <- paste(rep(colnames(Bipartite_matrix),Number_Layers_Type_2),rep(LayerName_Type_2, each = Number_Type_2),sep="::")
     }else{
         Col_Node_Names <- colnames(Bipartite_matrix)
     }
@@ -644,6 +645,10 @@ get.supra.adj.bipartite.by.networkid <- function(Bipartite_NetworkID,AdjacencyMa
     L_Network_1 <- AdjacencyMatrixList[[paste0(Bipartite_NetworkID[1],"_",Bipartite_NetworkID[1])]]$L
     L_Network_2 <- AdjacencyMatrixList[[paste0(Bipartite_NetworkID[2],"_",Bipartite_NetworkID[2])]]$L
 
+    ## layername of network 1 and 2
+    LayerName_Network_1 <- AdjacencyMatrixList[[paste0(Bipartite_NetworkID[1],"_",Bipartite_NetworkID[1])]]$LayerName
+    LayerName_Network_2 <- AdjacencyMatrixList[[paste0(Bipartite_NetworkID[2],"_",Bipartite_NetworkID[2])]]$LayerName
+    
     ## Sort row and col names
     Bipartite_matrix <- AdjacencyMatrixList[[paste0(Bipartite_NetworkID[1],"_",Bipartite_NetworkID[2])]]$AdjacencyMatrix
     message(paste0(capture.output(dim(Bipartite_matrix)), collapse = "\n"))
@@ -654,7 +659,7 @@ get.supra.adj.bipartite.by.networkid <- function(Bipartite_NetworkID,AdjacencyMa
     N_Type_1 <-  length(pool_nodes_Network_1)
     N_Type_2 <-  length(pool_nodes_Network_2)
 
-    SupraAdjacencyMatrix <- expand.bipartite.graph.universal(N_Type_1,L_Network_1,N_Type_2,L_Network_2,Bipartite_matrix)
+    SupraAdjacencyMatrix <- expand.bipartite.graph.universal(N_Type_1,L_Network_1,N_Type_2,L_Network_2,LayerName_Network_1,LayerName_Network_2,Bipartite_matrix)
     message(paste0(capture.output(dim(SupraAdjacencyMatrix)), collapse = "\n"))
     ## normalize to make sure weight of lamda is correct.
     if(opt$verbose){
@@ -778,6 +783,25 @@ get.transition.multiplex.heterogenous <- function(config,SupraAdjacencyMatrixLis
     TransitionMultiplexHeterogeneousMatrix <- do.call(rbind,rowMatrix)
 
     TransitionMultiplexHeterogeneousMatrix %>% colSums %>% round(.,5) %>% table
+
+    ## correct degrees of each nodes to reduce the effects. fix problem of a disease has too many genes. Also fix the hub genes
+    ## row_degree <- rowSums(TransitionMultiplexHeterogeneousMatrix != 0)
+    ## row_degree[grep("OMIM:103780",names(row_degree))]
+    ## row_degree[grep("OMIM:114500",names(row_degree))]
+    ## row_degree[grep("OMIM:181500",names(row_degree))]
+    ## sort(row_degree,decreasing=T)[1:100] ## indicate the top diseases are all because of degree
+
+    ##
+    ## row_degree_correct <- log(row_degree)/row_degree
+    ## sort(row_degree_correct,decreasing=T)[1:100] ## indicate the top diseases are all because of degree
+    ## row_degree_correct[grep("OMIM:103780",names(row_degree_correct))]
+    ## row_degree_correct[grep("OMIM:181500",names(row_degree_correct))]
+    ## row_degree_correct[grep("OMIM:114500",names(row_degree_correct))]
+    ## sort(row_degree_correct[grep("OMIM",names(row_degree_correct))],decreasing =T) %>% head
+    ## sort(row_degree_correct[grep("OMIM",names(row_degree_correct))],decreasing =T) %>% tail
+    ## row_degree[names(sort(row_degree_correct[grep("OMIM",names(row_degree_correct))],decreasing =T))]
+
+    ## row_degree_correct
 
     ## initialize some parameter need for seed scoring initializaiton
     PoolNodesList <- lapply(SupraAdjacencyMatrixList,function(x){x$pool_nodes})
@@ -958,19 +982,24 @@ Random_Walk_Restart <- function(Network_Matrix, r,SeedGenes, Threshold=NULL,max_
 #### #### #### #### #### #### #### #### #### #### #### #### #### #### #### ####
 
 rank_native <- function(PoolNodesList,Results,Seeds){
-
-    Results_id <- gsub("(.*)_(\\d+)","\\1\t\\2",rownames(Results),perl = T) %>% strsplit(.,"\t")
+    ## PoolNodesList <- opt$TransitionMatrixList$PoolNodesList
+    ## Results <-  Random_Walk_Results
+    ## Seeds <- All_Seeds
+    x <- PoolNodesList[[1]]
+    
+    Results_id <- gsub("(.*?)::(.+)","\\1\t\\2",rownames(Results),perl = T) %>% strsplit(.,"\t")
     Results_id <- lapply(Results_id,function(x){
         if(length(x)==1){x = c(x,1)}else{x}})
     Results_dat <- data.table(do.call(rbind,Results_id) ,pvalue=as.matrix(Results)[,1])
 
     Results_Geomatric_Mean <- lapply(PoolNodesList,function(x){
+        head(x)
         ## get Layer number for each PoolNodesList
         tmp <- Results_dat[get(names(Results_dat)[1]) %in% x,] %>% dcast(.,as.formula(paste(names(Results_dat)[1],"~",names(Results_dat)[2])),value.var = "pvalue" ) %>% as.data.table
         ## sort layers to match original layer name
-        tmp <- tmp[,c(names(tmp)[1],mixedsort(names(tmp)[-1])),with=F]
+        ## tmp <- tmp[,c(names(tmp)[1],mixedsort(names(tmp)[-1])),with=F]
         ## format names of columns
-        names(tmp)=c("id",paste0("layers_",names(tmp)[-1]))
+        names(tmp)[1] <- "id"
         ## calculate geomMean
         tmp[,geomMean := apply(.SD,1,function(x)exp(mean(log(x[x>0])))),.SDcols = names(tmp)[2:ncol(tmp)]]
         tmp[is.na(geomMean),geomMean:=0]
@@ -982,7 +1011,7 @@ rank_native <- function(PoolNodesList,Results,Seeds){
         ## add rank
         tmp <- tmp[,rank:=1:.N]
         ## sort columns
-        tmp <- tmp[,c(which(grepl("id|geomMean|rank|seeds",names(tmp))),which(!grepl("id|geomMean|rank|seeds",names(tmp)))),with =F]
+        tmp <- tmp[,c(which(grepl("^(id|geomMean|rank|seeds)$",names(tmp),perl=T)),which(!grepl("^(id|geomMean|rank|seeds)$",names(tmp)))),with =F]
         tmp
     })
     

@@ -323,6 +323,55 @@ generate_TransitionMatrixList  <- function(opt,save=TRUE){
 
 }
 
+####################################################################
+#######		integrate specifisity
+#####################################################################
+update_TransitionMatrixSpecificity <- function(opt){
+    celltype_tissue_specificity <- fread("/fs0/chenr6/chenr6/Database/HPA/singlecell/celltype.tissue.specificity")
+
+    transitionmatrix_row <- strsplit(opt$TransitionMatrixList$TransitionMatrix %>% row.names,"::") %>% do.call(rbind,.) %>% as.data.table
+    dim(transitionmatrix_row)
+    length(opt$TransitionMatrixList$TransitionMatrix %>% row.names)
+    transitionmatrix_row <- data.table(opt$TransitionMatrixList$TransitionMatrix %>% row.names,transitionmatrix_row)
+    names(transitionmatrix_row) <- c("rn","gene","variable","cell_type")
+
+    transitionmatrix_specificity <- merge(transitionmatrix_row,celltype_tissue_specificity,by.x=c("gene","variable","cell_type"),by.y=c("gene","variable","cell_type"),all.x=T,sort=F)
+    transitionmatrix_specificity[,specificity:=cell_specificity * tissue_specificity]
+    transitionmatrix_specificity[grepl("OMIM",rn),specificity:=1]
+    transitionmatrix_specificity[grepl("OMIM",rn),]
+    transitionmatrix_specificity[grepl("^\\d+",rn,perl=T),specificity:=1]
+    transitionmatrix_specificity[grepl("^\\d+",rn,perl=T),]
+    transitionmatrix_specificity[!grepl("^\\d+",rn,perl=T) & !grepl("OMIM",rn),]$gene %>% unique
+    transitionmatrix_specificity[!grepl("^\\d+",rn,perl=T) & !grepl("OMIM",rn) & is.na(specificity),specificity:=0]
+    transitionmatrix_specificity[!grepl("^\\d+",rn,perl=T) & !grepl("OMIM",rn) & is.na(specificity),]$gene %>% unique
+
+    transitionmatrix_specificity[specificity>quantile(transitionmatrix_specificity$specificity[transitionmatrix_specificity$specificity>0],0.99),specificity:=quantile(transitionmatrix_specificity$specificity[transitionmatrix_specificity$specificity>0],0.99)]
+    
+    opt$TransitionMatrixList$TransitionMatrix %>% dim
+    transitionmatrix_specificity %>% dim
+    all(row.names(opt$TransitionMatrixList$TransitionMatrix) ==  transitionmatrix_specificity$rn)
+
+    opt$TransitionMatrixList$TransitionMatrix  <- Diagonal(length(transitionmatrix_specificity$specificity), x = transitionmatrix_specificity$specificity) %*% opt$TransitionMatrixList$TransitionMatrix
+    ## temp  <- Diagonal(length(transitionmatrix_specificity$specificity), x = transitionmatrix_specificity$specificity) %*% opt$TransitionMatrixList$TransitionMatrix
+
+    ## temp1 <- colNorm(temp)
+    ## validation
+    ## row.names(opt$TransitionMatrixList$TransitionMatrix)[grep("APOE",row.names(opt$TransitionMatrixList$TransitionMatrix),perl =T)]
+
+    ## apoe <- grep("APOE",row.names(opt$TransitionMatrixList$TransitionMatrix),perl =T)
+    ## tmpv <- opt$TransitionMatrixList$TransitionMatrix[,apoe] * transitionmatrix_specificity$specificity
+    ## tmpv[tmpv!=0 &!is.na(tmpv)]
+    ## apply(tmpv,2,function(x){x[x!=0 &!is.na(x)]})
+
+    ## all(tmp[,apoe]==tmpv,na.rm=T)
+    opt$TransitionMatrixList$TransitionMatrix <- colNorm(opt$TransitionMatrixList$TransitionMatrix)
+    
+    ##validate no missing value
+    colSums(opt$TransitionMatrixList$TransitionMatrix) %>% round(.,5) %>% table
+    
+    rownames(opt$TransitionMatrixList$TransitionMatrix) <- transitionmatrix_specificity$rn
+    opt
+}
 ## ####################################################################
 ## ####### WE PREPARE THE SEEDS SCORES AND WE PERFORM THE RWR-MH. WE WRITE
 ## ####### THE OUTPUT FILE CONTAINING HGNC GENE SYMBOL AND THEIR RESULTING SCORES. 		
@@ -347,6 +396,13 @@ FlexNet <- function(opt){
     }
 
     if(opt$verbose){
+        message("STEP: ","updating transition matrix using specificity")
+    }
+
+    opt <- update_TransitionMatrixSpecificity(opt)
+    gc()
+    
+    if(opt$verbose){
         message("STEP: ","Start FlexNet...")
         message("STEP: ","Checking Seed nodes...")}
     
@@ -362,7 +418,8 @@ FlexNet <- function(opt){
     SeedFilelist <- SeedFileList[!is.null(SeedFileList)]
     registerDoParallel(opt$threads)
 
-    rlt <- foreach(Seed_File=SeedFileList) %dopar% { 
+    rlt <- foreach(Seed_File=SeedFileList) %dopar% {
+        ## Seed_File <- SeedFileList[[1]]
         All_Seeds <- read.csv(Seed_File,header=FALSE,sep="\t",dec=".",stringsAsFactors = FALSE)
         Seed_File_List <- check.seeds.general(All_Seeds,opt$TransitionMatrixList$PoolNodesList)
         
@@ -395,7 +452,7 @@ FlexNet <- function(opt){
 
         if(opt$verbose)
             message("STEP: ","Performing Random Walk...")
-
+        
         ## print(names(opt$TransitionMatrixList))
         ## We perform the Walks on the multiplex-heterogeneous network.
         Random_Walk_Results <- Random_Walk_Restart(Network_Matrix = opt$TransitionMatrixList$TransitionMatrix,r = config$r,SeedGenes = Seeds_Score,max_iter = opt$max_iter)
@@ -403,7 +460,11 @@ FlexNet <- function(opt){
         final_rank <- list()
 ### We remove the seed genes from the ranking, we sort by score and we write the results.
         final_rank <- rank_native(opt$TransitionMatrixList$PoolNodesList,Random_Walk_Results,All_Seeds)
-        names(final_rank[["LoadedGeneLayers"]])[-1:-4] <- opt$TransitionMatrixList$LayerName[["LoadedGeneLayers"]]
+        ## names(final_rank[["LoadedGeneLayers"]])[-1:-4] <- opt$TransitionMatrixList$LayerName[["LoadedGeneLayers"]]
+
+        if(opt$verbose)
+            message("STEP: ","writing to ",paste0(opt$dir_out,"/",basename(Seed_File), "..."))
+        
         tmp <- lapply(1:length(final_rank),function(i){
             write.table(final_rank[[i]],file = paste0(opt$dir_out,"/",basename(Seed_File),".",names(final_rank)[i]),sep="\t",row.names = FALSE, dec=".",quote=FALSE)
         })
@@ -426,9 +487,12 @@ require("dnet")
 require("supraHex")
 require("yaml")
 require("data.table")
-
+require("this.path")
 ## source(paste(Sys.getenv("BASEDIR"), "/myscript/Rscripts/rmd/netRepurpose/Functions/All_Functions.v3.R",sep = ""))
-source("/fs0/chenr6/chenr6/myscript/Rscripts/mypkg/FlexNet/All_Functions.R")
+## source("/fs0/chenr6/chenr6/myscript/Rscripts/mypkg/FlexNet_fork/All_Functions.R")
+mydir <- this.dir()
+source(paste(mydir,"All_Functions.R",sep="/"))
+
 
 opt$config <- read_yaml(file = opt$yaml)
 if(opt$verbose)
@@ -446,6 +510,9 @@ if(opt$Seed.File.List !="NULL"){
 if(opt$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers!="NULL"){
     opt$config$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers <- opt$Bipartite.LoadedGeneLayers.LoadedDiseaseLayers
 }
+
+
+
 
 for(cmd in opt$cmd){
     if(grepl("generate_AdjacencyMatrixList",cmd,perl =T,ignore.case = TRUE)){
