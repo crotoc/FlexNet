@@ -40,8 +40,16 @@ suppressMessages(require("readr"))
 suppressMessages(require("gtools"))
 suppressMessages(using("doParallel"))
 suppressMessages(using("parallel"))
-
-
+suppressMessages(using("doRNG"))
+require("igraph")
+require("Matrix")
+require("dnet")
+require("supraHex")
+require("yaml")
+require("MatrixExtra")
+require("stringr")
+require("doFuture")
+options(future.rng.onMisuse = "ignore")
 ## loadfonts()
 ## theme_figure <- theme_classic() + theme(panel.background = element_rect(fill = 'transparent', colour = NA),legend.title=element_blank(),text=element_text(family=opt$fontfamily),axis.title.x = element_blank(),plot.title = element_text(hjust=0.5, face="bold",size=12),axis.line = element_blank())
 
@@ -66,6 +74,12 @@ parser_script$add_argument("--saveIntermediate", default="NULL",dest="saveInterm
 parser_script$add_argument("--weighted", action="store_true",dest="weighted", default=FALSE,help="weighted is [default %(default)s]")
 parser_script$add_argument("--max_iter", type="integer", default=1000,help="max_iter [default %(default)s]", metavar="number")
 parser_script$add_argument("--Seed.File.List", default="NULL",dest="Seed.File.List",help = "Seed.File.List is [default \"%(default)s\"]")
+parser_script$add_argument("--Seed.File", default="NULL",dest="Seed.File",help = "Seed.File is [default \"%(default)s\"]")
+parser_script$add_argument("--go", default="/fs0/chenr6/Database_fs0/Gibbs/network/go_propogation_probality_rp_0.3.RData",dest="go",help = "go is [default \"%(default)s\"]")
+parser_script$add_argument("--specificity", default="/panfs/accrepfs.vampire/nobackup/cgg/chenr6/project/netRepurpose/perDrug/dir_debugBootstrapping/celltype.tissue.specificity",dest="specificity",help = "specificity is [default \"%(default)s\"]")
+parser_script$add_argument("--cmd",nargs="+", default="1",dest="cmd",help = "cmd is [default \"%(default)s\"]")
+parser_script$add_argument("--singleSamplingMode", action="store_true",dest="singleSamplingMode", default=FALSE,help="singleSamplingMode is [default %(default)s]")
+parser_script$add_argument("--threadsSampling", type="integer", default=1, help="threadsSampling [default %(default)s]")
 
 if(!is.null(opt$cmdArgs)){
     opt_script <- addArg(parser_script,c("General"))$parse_known_args(opt$cmdArgs)[[1]]
@@ -120,149 +134,102 @@ if(opt$test){
 
 
 
-generate_AdjacencyMatrixList <- function(opt,save=TRUE){
+generate_GraphList <- function(opt,save=TRUE){
     config <- opt$config
 
-    if(is.null(config$saveAdjacencyMatrixList)){
-        config$saveAdjacencyMatrixList <- paste0(opt$saveIntermediate,".adj.","rda")
+    if(is.null(config$saveGraphList)){
+        config$saveGraphList <- paste0(opt$saveIntermediate,".graph.","rda")
     }
 
-    if(file.exists(config$saveAdjacencyMatrixList)){
+    if(file.exists(config$saveGraphList)){
         if(opt$verbose)
-            message("\nSTEP: ",config$saveAdjacencyMatrixList, " exists. Skip generating and loading directly")
-        load(config$saveAdjacencyMatrixList)
+            message("\nSTEP: ",config$saveGraphList, " exists. Skip generating and loading directly")
+        if(length(grep("generate_SupraAdjacencyMatrix",opt$cmd))==0){
+            return(opt)
+        }else{
+            load(config$saveGraphList)
+        }
     }else{
         ## Add some network info to the save name.
         if(opt$verbose)
-            message("\nSTEP: ",config$saveAdjacencyMatrixList, "doesn't exist. Change name by adding network information. Generating...")
+            message("\nSTEP: ",config$saveGraphList, " doesn't exist. Change name by adding network information. Generating...")
 
-        ##		Read the layers of our multiplex networks
-        ## The structure of AdjacencyMatrixList is like following:
-        ## For multiplex networks, there are four slots:
+        ## Read the layers of our multiplex networks
 
-        ## | slot                 | description                                                       |
-        ## | AdjacencyMatrix | The adjacency matrix for a specific type of multiplex network     |
-        ## | L                    | Number of layers for this type of multiplex network               |
-        ## | N                    | Number of nodes for this type of multiplex network                |
-        ## | pool_nodes           | The sorted union of nodes name for this type of multiplex network |
-        ## | graphs               | List of igraph objects for each layer in the multiplex network    |
+        GraphList <- list()
+        message("STEP: ","Reading Multiplex Layers...")
+        GraphList <- c(GraphList,get_multiplex_network(config))
 
+        ## Read the layers of our bipartite networks
+        config$pool_nodes <- lapply(GraphList,function(x){pool.of.nodes(x) %>% sort})
 
-        AdjacencyMatrixList <- list()
-
+        GraphList <- c(GraphList,get_bipartite_network(config))
+        
         if(opt$verbose)
-            message("STEP: ","Reading Multiplex Layers...")
-        for(NetworkID in config$LoadedNetworks){
-            if(opt$verbose)
-                message("STEP: ","Reading Multiplex Layers: ",NetworkID)
-            AdjacencyMatrixList[[paste(NetworkID,NetworkID,sep = "_")]] <- get.adj.multiplex.by.networkid(NetworkID,config, returnGraph=F)
-        }
-        AdjacencyMatrixList %>% names
-
-        ##		 Read the layers of our bipartite networks
-        ## The structure of AdjacencyMatrixList is like following:
-
-        ## For bipartite networks, there are two slots:
-        ## | slot                 | description                                                   |
-        ## | AdjacencyMatrix | The adjacency matrix for a specific type of bipartite network |
-        ## | graphs               | igraph object for each layer in the bipartite network         |
-        if(opt$verbose)
-            message("STEP: ","Reading Bipartite Layers...")
-        AllPossibleBipartite <- as.list(as.data.frame(combn(config$LoadedNetworks,2,simplify =T)))
-        for(Bipartite_NetworkID in AllPossibleBipartite){
-            if(opt$verbose)
-                message("STEP: ","Reading Bipartite Layers: ",Bipartite_NetworkID)
-            ## The starting vertex in on the column
-            AdjacencyMatrixList[[paste(Bipartite_NetworkID,collapse = "_")]] <- get.adj.bipartite.by.networkid(Bipartite_NetworkID,AdjacencyMatrixList,config)
-            ## save the transpose of  the bipartite matrix 
-            AdjacencyMatrixList[[paste(rev(Bipartite_NetworkID),collapse = "_")]] <- get.adj.bipartite.by.networkid(rev(Bipartite_NetworkID),AdjacencyMatrixList,config)
-        }
-        AdjacencyMatrixList %>% names
-
-        ## Save adjacency matrix
-
-        if(opt$verbose)
-            message("STEP: ","save AdjacencyMatrixList to ",config$saveAdjacencyMatrixList, "...")
+            message("STEP: ","save GraphList to ",config$saveGraphList, "...")
         if(save){
-            save(AdjacencyMatrixList,file = config$saveAdjacencyMatrixList)
+            save(GraphList,file = config$saveGraphList)
         }
     }
-    opt$AdjacencyMatrixList <- AdjacencyMatrixList
+    opt$GraphList <- GraphList
+    gc()
     if(opt$verbose)
-        message("STEP: generating AdjacencyMatrixList done.\n")
+        message("STEP: generating GraphList done.\n")
     opt
 }
 
 
 #####################################################################
-#######	generate SupraAdjacencyMatrixList if not exists
+#######	generate SupraAdjacencyMatrix if not exists
 #####################################################################
-generate_SupraAdjacencyMatrixList <- function(opt,save=TRUE){
+
+
+generate_SupraAdjacencyMatrix <- function(opt,save=TRUE){
     config <- opt$config
 
-    if(is.null(config$saveAdjacencyMatrixList)){
-        config$saveAdjacencyMatrixList <- paste0(opt$saveIntermediate,".adj.rda")
+    if(is.null(config$saveGraphList)){
+        config$saveGraphList <- paste0(opt$saveIntermediate,".graph.rda")
     }
 
 
-    if(is.null(opt$AdjacencyMatrixList) && file.exists(config$saveAdjacencyMatrixList)){
-        load(config$saveAdjacencyMatrixList)
-        opt$AdjacencyMatrixList <- AdjacencyMatrixList
-        rm(AdjacencyMatrixList)
+    if(is.null(opt$GraphList) && file.exists(config$saveGraphList)){
+        load(config$saveGraphList)
+        opt$GraphList <- GraphList
+        rm(GraphList)
         gc()
     }
 
     
-    if(is.null(config$saveSupraAdjacencyMatrixList)){
-        config$saveSupraAdjacencyMatrixList <- paste0(opt$saveIntermediate,".supra.rda")
+    if(is.null(config$saveSupraAdjacencyMatrix)){
+        config$saveSupraAdjacencyMatrix <- paste0(opt$saveIntermediate,".supra.rda")
     }
 
-    if(file.exists(config$saveSupraAdjacencyMatrixList)){
+    if(file.exists(config$saveSupraAdjacencyMatrix)){
         if(opt$verbose)
-            message("\nSTEP: ",config$saveSupraAdjacencyMatrixList, " exists. Skip generating and loading directly")
-        load(config$saveSupraAdjacencyMatrixList)
-        
+            message("\nSTEP: ",config$saveSupraAdjacencyMatrix, " exists. Skip generating and loading directly")
+        if(length(grep("generate_TransitionMatrix",opt$cmd))==0){
+            return(opt)
+        }else{
+            load(config$saveSupraAdjacencyMatrix)
+        }
     }else{
         ## Add some network info to the save name.
         if(opt$verbose)
-            message("\nSTEP: ",config$saveSupraAdjacencyMatrixList, "doesn't exist. Change name by adding network information. Generating...")
+            message("\nSTEP: ",config$saveSupraAdjacencyMatrix, " doesn't exist. Change name by adding network information. Generating...")
 
-        SupraAdjacencyMatrixList <- list()
-        if(opt$verbose)
-            message("STEP: ","Reading Multiplex Layers...")
-        for(NetworkID in config$LoadedNetworks){
-            if(opt$verbose)
-                message("STEP: ","Reading Multiplex Layers: ",NetworkID)
-            SupraAdjacencyMatrixList[[paste(NetworkID,NetworkID,sep = "_")]] <- get.supra.adj.multiplex.by.networkid(NetworkID,opt$AdjacencyMatrixList,config)
-        }
-        SupraAdjacencyMatrixList %>% names
-
-        if(opt$verbose)
-            message("STEP: ","Reading Bipartite Layers...")
-        AllPossibleBipartite <- as.list(as.data.frame(combn(config$LoadedNetworks,2,simplify =T)))
-        if(length(AllPossibleBipartite)>0){
-            for(Bipartite_NetworkID in AllPossibleBipartite){
-                if(opt$verbose)
-                    message("STEP: ","Reading Bipartite Layers: ",Bipartite_NetworkID)
-                ## The starting vertex in on the column
-                SupraAdjacencyMatrixList[[paste(Bipartite_NetworkID,collapse = "_")]] <- get.supra.adj.bipartite.by.networkid(Bipartite_NetworkID,opt$AdjacencyMatrixList,config)
-                ## transpose the bipartite matrix and save it to reversed ID 
-                SupraAdjacencyMatrixList[[paste(rev(Bipartite_NetworkID),collapse = "_")]] <- get.supra.adj.bipartite.by.networkid(rev(Bipartite_NetworkID),opt$AdjacencyMatrixList,config)
-            }
-        }
-        SupraAdjacencyMatrixList %>% names
-        lapply(SupraAdjacencyMatrixList,dim)
+        
+        SupraAdjacencyMatrix <- get_full_network_mat(config,opt$GraphList)
         
         if(opt$verbose)
-            message("STEP: ","save SupraAdjacencyMatrixList to ",config$saveSupraAdjacencyMatrixList, "...")
+            message("STEP: ","save SupraAdjacencyMatrix to ",config$saveSupraAdjacencyMatrix, "...")
         if(save){
-            save(SupraAdjacencyMatrixList,file = config$saveSupraAdjacencyMatrixList)
+            save(SupraAdjacencyMatrix,file = config$saveSupraAdjacencyMatrix)
         }
     }
-    opt$SupraAdjacencyMatrixList <-  SupraAdjacencyMatrixList
+    opt$SupraAdjacencyMatrix <-  SupraAdjacencyMatrix
     if(opt$verbose)
-        message("STEP: generating SupraAdjacencyMatrixList done.\n")
-    opt$AdjacencyMatrixList <- NULL
+        message("STEP: generating SupraAdjacencyMatrix done.\n")
+    opt$GraphList <- NULL
     gc()
     opt
 }
@@ -271,55 +238,268 @@ generate_SupraAdjacencyMatrixList <- function(opt,save=TRUE){
 ####################################################################
 #######		generate transition matrix
 #####################################################################
-generate_TransitionMatrixList  <- function(opt,save=TRUE){
+generate_TransitionMatrix  <- function(opt,save=TRUE){
     config <- opt$config
 
-    if(is.null(config$saveSupraAdjacencyMatrixList)){
-        config$saveSupraAdjacencyMatrixList <- paste0(opt$saveIntermediate,".supra.rda")
+    if(is.null(config$saveSupraAdjacencyMatrix)){
+        config$saveSupraAdjacencyMatrix <- paste0(opt$saveIntermediate,".supra.rda")
     }
 
-    if(is.null(opt$SupraAdjacencyMatrixList) && file.exists(config$saveSupraAdjacencyMatrixList)){
-        load(config$saveSupraAdjacencyMatrixList)
-        opt$SupraAdjacencyMatrixList <- SupraAdjacencyMatrixList
-        rm(SupraAdjacencyMatrixList)
+    if(is.null(opt$SupraAdjacencyMatrix) && file.exists(config$saveSupraAdjacencyMatrix)){
+        load(config$saveSupraAdjacencyMatrix)
+        opt$SupraAdjacencyMatrix <- SupraAdjacencyMatrix
+        rm(SupraAdjacencyMatrix)
         gc()
     }
 
-    
-    if(is.null(config$saveTransitionMatrixList)){
-        config$saveTransitionMatrixList <- paste0(opt$saveIntermediate,".transition.rda")
+    if(is.null(config$saveTransitionMatrix)){
+        if(is.null(opt$i)){
+            opt$i <-0
+        }
+        config$saveTransitionMatrix <- paste0(opt$saveIntermediate,".transition.",opt$i,".rda")
     }
 
-    if(file.exists(config$saveTransitionMatrixList)){
+
+    if(file.exists(config$saveTransitionMatrix)){
         if(opt$verbose)
-            message("\nSTEP: ",config$saveTransitionMatrixList, " exists. Skip generating and loading directly")
-        load(config$saveTransitionMatrixList)
-        
+            message("\nSTEP: ",config$saveTransitionMatrix, " exists. Skip generating and loading directly")
+        if(length(grep("FlexNet",opt$cmd,perl=T))==0){
+            return(opt)
+        }else{
+            load(config$saveTransitionMatrix)
+        }
     }else{
         ## Add some network info to the save name.
         if(opt$verbose)
-            message("\nSTEP: ",config$saveTransitionMatrixList, "doesn't exist. Change name by adding network information. Generating...")
+            message("\nSTEP: ",config$saveTransitionMatrix, " doesn't exist. Change name by adding network information. Generating...")
 
         if(opt$verbose)
             message("STEP: ","Transforming from adjacency matrices to transition matrix...\n")
-        TransitionMatrixList <- get.transition.multiplex.heterogenous(config,opt$SupraAdjacencyMatrixList)
+
+        ## get layers from SupraAdjancency Matrix
+        rn <- str_split(rownames(opt$SupraAdjacencyMatrix),"::",n=3) %>% do.call(rbind,.) %>% data.table %>% .[,V4:=rownames(opt$SupraAdjacencyMatrix)]        
+        layers_list <-lapply(unique(rn$V1),function(x){tmp <- lapply(unique(rn[V1==x,]$V2),function(y){rn[V1==x & V2==y,]$V4});tmp;names(tmp) <- unique(rn[V1==x,]$V2);tmp})
+        names(layers_list) <- unique(rn$V1)
+        
+
+        ## sort lists
+        delta_mat <- get_full_delta_mat(config,layers_list)
+        lambda_mat <- get_full_lambda_mat(config,layers_list)
+
+        TransitionMatrix <-get_all_transition_mat(opt$SupraAdjacencyMatrix,delta_mat,lambda_mat)
 
         if(opt$verbose)
-            message("STEP: ","save TransitionMatrixList to ",config$saveTransitionMatrixList, "...")
+            message("STEP: ","save TransitionMatrix to ",config$saveTransitionMatrix, "...")
         if(save){
-            save(TransitionMatrixList,file = config$saveTransitionMatrixList)
+            save(TransitionMatrix,file = config$saveTransitionMatrix)
         }    
     }
-    opt$TransitionMatrixList <- TransitionMatrixList
+    opt$TransitionMatrix <- TransitionMatrix
 
     if(opt$verbose)
         message("STEP: generating TransitionMatrix done.\n")
 
-    opt$SupraAdjacencyMatrixList <- NULL
+    opt$SupraAdjacencyMatrix <- NULL
     gc()
     opt
 
 }
+
+####################################################################
+#######		integrate specifisity
+#####################################################################
+update_TransitionMatrixSpecificity <- function(opt){
+    celltype_tissue_specificity <- fread(opt$specificity)
+
+    transitionmatrix_row <-  str_split(rownames(opt$TransitionMatrix),"::",n=4) %>% do.call(rbind,.) %>% data.table(.,rn=rownames(opt$TransitionMatrix))
+    transitionmatrix_row <- strsplit(transitionmatrix_row$V3,"\\.",perl =T) %>% lapply(.,function(x){if(length(x)==1){c(x,x)}else{x}}) %>% do.call(rbind,.) %>% data.table(transitionmatrix_row,.)
+    dim(transitionmatrix_row)
+    length(opt$TransitionMatrix %>% row.names)
+    names(transitionmatrix_row) <- c("NetworkType","NetworkID_1","NetworkID_2","gene","rn","tissue","cell_type")
+    transitionmatrix_row[,c("tissue","cell_type")] %>% unique
+
+    transitionmatrix_specificity <- merge(transitionmatrix_row,celltype_tissue_specificity,by.x=c("gene","tissue","cell_type"),by.y=c("gene","variable","cell_type"),all.x=T,sort=F)
+    transitionmatrix_specificity[,specificity:=cell_specificity * tissue_specificity]
+    ## drug and disease has no specificity
+    transitionmatrix_specificity[NetworkType %in% c("LoadedDiseaseLayers","LoadedDrugLayers"),specificity:=1]
+    transitionmatrix_specificity[NetworkType %in% c("LoadedDiseaseLayers","LoadedDrugLayers"),]$specificity %>% table
+    ## non scNetwork should have no  specificity
+    transitionmatrix_specificity[NetworkType %in% c("LoadedGeneLayers") & ! NetworkID_1 %in% "scNetwork",specificity:=1]
+    transitionmatrix_specificity[NetworkType %in% c("LoadedGeneLayers") & ! NetworkID_1 %in% "scNetwork",]$specificity %>% table
+    ## the rest NAs should be the genes don't have specificity value, assign to 0
+    transitionmatrix_specificity[is.na(specificity),]$cell_type %>% unique
+    transitionmatrix_specificity[is.na(specificity),]$tissue %>% unique
+    transitionmatrix_specificity[is.na(specificity),specificity:=0]
+
+    ## no NA
+    transitionmatrix_specificity[is.na(specificity),]
+
+    ## limit specificity value to quantile> 0.99
+    transitionmatrix_specificity[specificity!=0]$specificity %>% quantile
+    transitionmatrix_specificity[specificity>quantile(transitionmatrix_specificity$specificity[transitionmatrix_specificity$specificity>0],0.99),specificity:=quantile(transitionmatrix_specificity$specificity[transitionmatrix_specificity$specificity>0],0.99)]
+    transitionmatrix_specificity[specificity!=0]$specificity %>% quantile
+
+    opt$TransitionMatrix %>% dim
+    transitionmatrix_specificity %>% dim
+    all(rownames(opt$TransitionMatrix) ==  transitionmatrix_specificity$rn)
+
+    opt$TransitionMatrix  <- Diagonal(length(transitionmatrix_specificity$specificity), x = transitionmatrix_specificity$specificity) %*% opt$TransitionMatrix
+    ## temp  <- Diagonal(length(transitionmatrix_specificity$specificity), x = transitionmatrix_specificity$specificity) %*% opt$TransitionMatrix
+
+    ## temp1 <- colNorm(temp)
+    ## validation
+    ## row.names(opt$TransitionMatrix)[grep("APOE",row.names(opt$TransitionMatrix),perl =T)]
+
+    ## apoe <- grep("APOE",row.names(opt$TransitionMatrix),perl =T)
+    ## tmpv <- opt$TransitionMatrix[,apoe] * transitionmatrix_specificity$specificity
+    ## tmpv[tmpv!=0 &!is.na(tmpv)]
+    ## apply(tmpv,2,function(x){x[x!=0 &!is.na(x)]})
+
+    ## all(tmp[,apoe]==tmpv,na.rm=T)
+     opt$TransitionMatrix <- colNorm(opt$TransitionMatrix)
+
+     ##validate no missing value
+     colSums(opt$TransitionMatrix) %>% round(.,5) %>% table
+
+    rownames(opt$TransitionMatrix) <- transitionmatrix_specificity$rn
+    opt
+}
+
+## ####################################################################
+## ####### bootstrapping by sampling gene-disease association based on
+## ####### GO networks
+## #####################################################################
+## load("/fs0/chenr6/Database_fs0/Gibbs/network/go_propogation_probality_rp_0.3.RData")
+## opt <- generate_SupraAdjacencyMatrix(opt)
+## opt$pro_p <- pro_p
+## rm(pro_p)
+## gc()
+## set.seed(1)
+## rm(.Random.seed, envir=globalenv())
+sampleGeneDiseaseAssocation <- function(opt){
+    load(opt$go)
+    opt <- generate_SupraAdjacencyMatrix(opt)
+    opt$pro_p <- pro_p
+    rm(pro_p)
+    gc()
+
+    if(opt$verbose)
+        message("STEP: Read GO RWR")
+    
+    if(opt$verbose){
+        message("STEP: read SupraAdjancencyMatrix")
+    }
+
+    config <- opt$config
+
+    if(is.null(config$saveSupraAdjacencyMatrix)){
+        config$saveSupraAdjacencyMatrix <- paste0(opt$saveIntermediate,".supra.rda")
+    }
+
+    if(is.null(opt$SupraAdjacencyMatrix) && file.exists(config$saveSupraAdjacencyMatrix)){
+        load(config$saveSupraAdjacencyMatrix)
+        opt$SupraAdjacencyMatrix <- SupraAdjacencyMatrix
+        rm(SupraAdjacencyMatrix)
+        gc()
+    }
+
+    ## singleSamplingMode is used for generate a single transition rda using sampling
+    ## FALSE indicates to generate a batch number. Use FALSE to speed up because it only load GO network and SupraAdjacencyMatrix once;
+    if(opt$singleSamplingMode){
+        Is = opt$number
+    }else{
+        Is = 1:opt$number
+    }
+
+    substitute <- function(opt,i){
+        opt$i <- i
+        opt$config$saveTransitionMatrix <- paste0(opt$saveIntermediate,".transition.",opt$i,".rda")        
+        if(!file.exists(opt$config$saveTransitionMatrix)){
+            if(opt$verbose){
+                message("STEP: Sampling...",i, "")
+            }
+            opt$SupraAdjacencyMatrix <- substitute_bipartite_mat(opt)
+        }
+        if(opt$verbose){
+            message("STEP: update transition")
+        }
+        opt <- generate_TransitionMatrix(opt)
+        if(opt$verbose){
+            message("STEP: FlexNet")
+        }
+        ## opt <- FlexNet(opt)
+        rm(opt)
+        gc()
+    }
+    
+    options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
+    plan(multicore, workers = opt$threadsSampling)
+
+    ## registerDoParallel(opt$threadsSampling)
+    foreach(i=Is) %dofuture% { 
+        substitute(opt, i)
+    }
+}
+
+
+sampleRandomGeneDiseaseAssocation <- function(opt){
+    if(opt$verbose){
+        message("STEP: read SupraAdjancencyMatrix")
+    }
+
+    config <- opt$config
+
+    if(is.null(config$saveSupraAdjacencyMatrix)){
+        config$saveSupraAdjacencyMatrix <- paste0(opt$saveIntermediate,".supra.rda")
+    }
+
+    if(is.null(opt$SupraAdjacencyMatrix) && file.exists(config$saveSupraAdjacencyMatrix)){
+        load(config$saveSupraAdjacencyMatrix)
+        opt$SupraAdjacencyMatrix <- SupraAdjacencyMatrix
+        rm(SupraAdjacencyMatrix)
+        gc()
+    }
+
+    
+    options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
+    plan(multicore, workers = opt$threads)
+
+    ## singleSamplingMode is used for generate a single transition rda using sampling
+    ## FALSE indicates to generate a batch number. Use FALSE to speed up because it only load GO network and SupraAdjacencyMatrix once;
+    if(opt$singleSamplingMode){
+        Is = opt$number
+    }else{
+        Is = 1:opt$number
+    }
+
+    substitute <- function(opt, i){
+        opt$i <- i
+        opt$config$saveTransitionMatrix <- paste0(opt$saveIntermediate,".transition.",opt$i,".rda")        
+        if(!file.exists(opt$config$saveTransitionMatrix)){
+            if(opt$verbose){
+                message("STEP: Sampling... ",i, "")
+            }
+            opt$SupraAdjacencyMatrix <- substitute_bipartite_mat_randomSampling(opt)
+        }
+        if(opt$verbose){
+            message("STEP: update transition")
+        }
+        opt <- generate_TransitionMatrix(opt)
+        if(opt$verbose){
+            message("STEP: FlexNet")
+        }
+        ## opt <- FlexNet(opt)
+        rm(opt)
+        gc()
+
+    }
+    registerDoParallel(opt$threadsSampling)
+    foreach(i=Is) %dorng% {
+        substitute(opt,i)
+    }
+}
+
+
 
 ## ####################################################################
 ## ####### WE PREPARE THE SEEDS SCORES AND WE PERFORM THE RWR-MH. WE WRITE
@@ -330,24 +510,33 @@ generate_TransitionMatrixList  <- function(opt,save=TRUE){
 FlexNet <- function(opt){
     config <- opt$config
 
-    if(is.null(config$saveTransitionMatrixList)){
-        config$saveTransitionMatrixList <- paste0(opt$saveIntermediate,".transition.rda")
+    if(is.null(config$saveTransitionMatrix)){
+        config$saveTransitionMatrix <- paste0(opt$saveIntermediate,".transition.",opt$i,".rda")
     }
 
-    if(is.null(opt$TransitionMatrixList) && file.exists(config$saveTransitionMatrixList)){
+    if(is.null(opt$TransitionMatrix) && file.exists(config$saveTransitionMatrix)){
         if(opt$verbose){
-            message("STEP: ","load FlexNet...")
+            message("STEP: ","load FlexNet...", config$saveTransitionMatrix)
         }
-        load(config$saveTransitionMatrixList)
-        opt$TransitionMatrixList <- TransitionMatrixList
-        rm(TransitionMatrixList)
+        load(config$saveTransitionMatrix)
+        opt$TransitionMatrix <- TransitionMatrix
+        rm(TransitionMatrix)
         gc()
     }
 
     if(opt$verbose){
+        message("STEP: ","updating transition matrix using specificity")
+    }
+
+    opt <- update_TransitionMatrixSpecificity(opt)
+    gc()
+
+    if(opt$verbose){
         message("STEP: ","Start FlexNet...")
         message("STEP: ","Checking Seed nodes...")}
-    
+
+
+
     if(is.null(config$Seed.File.List) && file.exists(config$Seed.File)){
         SeedFileList=config$Seed.File
     }else{
@@ -358,18 +547,33 @@ FlexNet <- function(opt){
 
     SeedFileList <- lapply(SeedFileList,function(x){if(file.exists(x)){message("STEP: Seed file ",x, " is existing");x}else{message("STEP: Seed file ",x, " is not existing")}}) %>% unlist
     SeedFilelist <- SeedFileList[!is.null(SeedFileList)]
-    registerDoParallel(opt$threads)
 
-    rlt <- foreach(Seed_File=SeedFileList) %dopar% { 
+
+    ## need for RWR
+    PoolNodesList <- split(opt$TransitionMatrix %>% rownames %>% strsplit(.,"::",perl =T) %>% lapply(., function(x){x[length(x)]}) %>% unlist, opt$TransitionMatrix %>% rownames %>% strsplit(.,"::",perl =T) %>% lapply(., function(x){x[1]}) %>% unlist)
+
+    ## get layer information from transition matrix
+    rn <- str_split(rownames(opt$TransitionMatrix),"::",n=4) %>% do.call(rbind,.) %>% data.table %>% .[,V5:=apply(.SD[,1:3],1,function(x){paste(x,collapse = "::")})]    %>% .[,V6:=rownames(opt$TransitionMatrix)]        
+    layers_list <-lapply(unique(rn$V1),function(x){tmp <- lapply(unique(rn[V1==x,]$V2),function(y){unique(rn[V1==x & V2==y,]$V5)});tmp;names(tmp) <- unique(rn[V1==x,]$V2);tmp})
+    names(layers_list) <- unique(rn$V1)
+
+    ## get tau
+    tau <- lapply(names(layers_list),function(x){getNetworkSpecificParams(x,layers_list,"Restart.Probability",config)})
+    names(tau) <- names(layers_list)
+
+    options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
+    plan(multicore, workers = opt$threads)
+    rlt <- foreach(Seed_File=SeedFileList) %dofuture% { 
         All_Seeds <- read.csv(Seed_File,header=FALSE,sep="\t",dec=".",stringsAsFactors = FALSE)
-        Seed_File_List <- check.seeds.general(All_Seeds,opt$TransitionMatrixList$PoolNodesList)
+
+        Seed_File_List <- check.seeds.general(All_Seeds,PoolNodesList)
         
         ## validation
         ## all(Seeds == unlist(All_seeds_ok))
 
         ## eta is the importance of each type of networks
         ##We compute the restart probability of each seed, based on eta and tau.
-        Seeds_Score <- get.seed.scores.weighted.universal(Seed_File_List,config$eta,opt$TransitionMatrixList$tau)
+        Seeds_Score <- get.seed.scores.weighted.universal(Seed_File_List,config$eta,tau)
         if(nrow(Seeds_Score)==0){
             return(NULL)
         }
@@ -394,39 +598,71 @@ FlexNet <- function(opt){
         if(opt$verbose)
             message("STEP: ","Performing Random Walk...")
 
-        ## print(names(opt$TransitionMatrixList))
+        ## print(names(opt$TransitionMatrix))
         ## We perform the Walks on the multiplex-heterogeneous network.
-        Random_Walk_Results <- Random_Walk_Restart(Network_Matrix = opt$TransitionMatrixList$TransitionMatrix,r = config$r,SeedGenes = Seeds_Score,max_iter = opt$max_iter)
-
+        Random_Walk_Results <- Random_Walk_Restart(Network_Matrix = opt$TransitionMatrix,r = config$r,SeedGenes = Seeds_Score,max_iter = opt$max_iter)
+        print("here")
         final_rank <- list()
 ### We remove the seed genes from the ranking, we sort by score and we write the results.
-        final_rank <- rank_native(opt$TransitionMatrixList$PoolNodesList,Random_Walk_Results,All_Seeds)
-        names(final_rank[["LoadedGeneLayers"]])[-1:-4] <- opt$TransitionMatrixList$LayerName[["LoadedGeneLayers"]]
+        final_rank <- rank_native(PoolNodesList,Random_Walk_Results,All_Seeds)
         tmp <- lapply(1:length(final_rank),function(i){
-            write.table(final_rank[[i]],file = paste0(opt$dir_out,"/",basename(Seed_File),".",names(final_rank)[i]),sep="\t",row.names = FALSE, dec=".",quote=FALSE)
+            if(opt$verbose)
+                message("STEP: saving to", paste0(opt$dir_out,"/",basename(Seed_File),".",opt$i,".",names(final_rank)[i]))
+            write.table(final_rank[[i]],file = paste0(opt$dir_out,"/",basename(Seed_File),".",opt$i,".",names(final_rank)[i]),sep="\t",row.names = FALSE, dec=".",quote=FALSE)
         })
         final_rank
     }
-    names(rlt) <- SeedFileList
+    ##names(rlt) <- SeedFileList
     if(opt$verbose)
         message("STEP: FlexNet done.\n")
-    opt$final_rank <- rlt
+    ##opt$final_rank <- rlt
     opt
+}
+
+
+FlexNetBootstrapping <- function(opt){
+    ## singleSamplingMode is used for load a single transition rda. 
+    ## FALSE indicates run Flexnet on input using a batch of transition rda.
+    ## TRUE can speed up by using more cores
+    if(opt$verbose){
+        message("STEP: FlexNetBootstrapping...")
+    }
+
+    if(opt$singleSamplingMode){
+        Is = opt$number
+    }else{
+        Is = 1:opt$number
+    }
+    options(future.globals.maxSize=200 * 1024*1024*1024) 
+    plan(multicore, workers = opt$threadsSampling)
+    ## registerDoParallel(opt$threadsSampling)
+    foreach(i=Is) %dofuture% { 
+        opt$i <- i
+        opt$config$saveTransitionMatrix <- paste0(opt$saveIntermediate,".transition.",opt$i,".rda")
+        
+        if(file.exists(opt$config$saveTransitionMatrix)){
+            if(opt$verbose){
+                message("STEP: FlexNet...",opt$config$saveTransitionMatrix, "")
+            }
+
+            opt <- FlexNet(opt)
+            rm(opt)
+            gc()
+        }else{
+            if(opt$verbose)
+                message("STEP: ",opt$config$saveTransitionMatrix, " not exist")
+        }
+    }
 }
 
 
 ####################################################################
 #######		Main function
 #####################################################################
-require("igraph")
-require("Matrix")
-require("dnet")
-require("supraHex")
-require("yaml")
-require("data.table")
 
 ## source(paste(Sys.getenv("BASEDIR"), "/myscript/Rscripts/rmd/netRepurpose/Functions/All_Functions.v3.R",sep = ""))
-source("/fs0/chenr6/chenr6/myscript/Rscripts/mypkg/FlexNet/All_Functions.R")
+## source("/fs0/chenr6/chenr6/myscript/Rscripts/rmd/netRepurpose/Functions/All_Functions.v2.R")
+source(paste0(Sys.getenv("BASEDIR"),"/myscript/Rscripts/mypkg/FlexNet_bootstrap/All_Functions.R"))
 
 opt$config <- read_yaml(file = opt$yaml)
 if(opt$verbose)
@@ -438,20 +674,35 @@ if(opt$saveIntermediate != "NULL"){
     if(!dir.exists(dirname(opt$saveIntermediate))) dir.create(dirname(opt$saveIntermediate),showWarnings=T,recursive=T)
 }
 
+## if seed.file.list is s
 if(opt$Seed.File.List !="NULL"){
     opt$config$Seed.File.List <- opt$Seed.File.List
 }
 
+## If seed.file is specified, use it instead of the file specified in yaml
+if(opt$Seed.File !="NULL"){
+    opt$config$Seed.File <- opt$Seed.File
+}
+
 for(cmd in opt$cmd){
-    if(grepl("generate_AdjacencyMatrixList",cmd,perl =T,ignore.case = TRUE)){
-        opt <- generate_AdjacencyMatrixList(opt)
-    }else if(grepl("generate_SupraAdjacencyMatrixList",cmd,perl =T,ignore.case = TRUE)){
-        opt <- generate_SupraAdjacencyMatrixList(opt)
-    }else if(grepl("generate_TransitionMatrixList",cmd,perl =T,ignore.case = TRUE)){
-        opt <- generate_TransitionMatrixList(opt)
-    }else if(grepl("FlexNet",cmd,perl =T,ignore.case = TRUE)){
+    if(grepl("generate_GraphList",cmd,perl =T,ignore.case = TRUE)){
+        opt <- generate_GraphList(opt)
+    }else if(grepl("generate_SupraAdjacencyMatrix",cmd,perl =T,ignore.case = TRUE)){
+        opt <- generate_SupraAdjacencyMatrix(opt)
+    }else if(grepl("generate_TransitionMatrix",cmd,perl =T,ignore.case = TRUE)){
+        opt <- generate_TransitionMatrix(opt)
+    }else if(grepl("FlexNet$",cmd,perl =T,ignore.case = TRUE)){
         opt <- FlexNet(opt)
+    }else if(grepl("sampleGeneDiseaseAssocation",cmd,perl =T, ignore.case = TRUE)){
+        ## set.seed(1)
+        sampleGeneDiseaseAssocation(opt)
+    }else if(grepl("sampleRandomGeneDiseaseAssocation",cmd,perl =T, ignore.case = TRUE)){
+        ## set.seed(1)
+        sampleRandomGeneDiseaseAssocation(opt)
+    }else if(grepl("FlexNetBootstrapping",cmd,perl =T, ignore.case = TRUE)){
+        FlexNetBootstrapping(opt)
     }
+    
 }
 
 ## plots <- heatmap.ggplot(opt=opt)
