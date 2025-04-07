@@ -50,6 +50,10 @@ require("MatrixExtra")
 require("stringr")
 require("doFuture")
 options(future.rng.onMisuse = "ignore")
+suppressMessages(require("RhpcBLASctl"))
+blas_set_num_threads(opt$threads)
+omp_set_num_threads(opt$threads)
+
 ## loadfonts()
 ## theme_figure <- theme_classic() + theme(panel.background = element_rect(fill = 'transparent', colour = NA),legend.title=element_blank(),text=element_text(family=opt$fontfamily),axis.title.x = element_blank(),plot.title = element_text(hjust=0.5, face="bold",size=12),axis.line = element_blank())
 
@@ -76,7 +80,7 @@ parser_script$add_argument("--max_iter", type="integer", default=1000,help="max_
 parser_script$add_argument("--Seed.File.List", default="NULL",dest="Seed.File.List",help = "Seed.File.List is [default \"%(default)s\"]")
 parser_script$add_argument("--Seed.File", default="NULL",dest="Seed.File",help = "Seed.File is [default \"%(default)s\"]")
 parser_script$add_argument("--go", default="/fs0/chenr6/Database_fs0/Gibbs/network/go_propogation_probality_rp_0.3.RData",dest="go",help = "go is [default \"%(default)s\"]")
-parser_script$add_argument("--specificity", default="/panfs/accrepfs.vampire/nobackup/cgg/chenr6/project/netRepurpose/perDrug/dir_debugBootstrapping/celltype.tissue.specificity",dest="specificity",help = "specificity is [default \"%(default)s\"]")
+parser_script$add_argument("--specificity", default="/fs0/chenr6/project/netRepurpose/specificity/celltype.tissue.specificity",dest="specificity",help = "specificity is [default \"%(default)s\"]")
 parser_script$add_argument("--cmd",nargs="+", default="1",dest="cmd",help = "cmd is [default \"%(default)s\"]")
 parser_script$add_argument("--singleSamplingMode", action="store_true",dest="singleSamplingMode", default=FALSE,help="singleSamplingMode is [default %(default)s]")
 parser_script$add_argument("--threadsSampling", type="integer", default=1, help="threadsSampling [default %(default)s]")
@@ -323,7 +327,7 @@ update_TransitionMatrixSpecificity <- function(opt){
     ## drug and disease has no specificity
     transitionmatrix_specificity[NetworkType %in% c("LoadedDiseaseLayers","LoadedDrugLayers"),specificity:=1]
     transitionmatrix_specificity[NetworkType %in% c("LoadedDiseaseLayers","LoadedDrugLayers"),]$specificity %>% table
-    ## non scNetwork should have no  specificity
+    ## non scNetwork should have no specificity
     transitionmatrix_specificity[NetworkType %in% c("LoadedGeneLayers") & ! NetworkID_1 %in% "scNetwork",specificity:=1]
     transitionmatrix_specificity[NetworkType %in% c("LoadedGeneLayers") & ! NetworkID_1 %in% "scNetwork",]$specificity %>% table
     ## the rest NAs should be the genes don't have specificity value, assign to 0
@@ -432,7 +436,7 @@ sampleGeneDiseaseAssocation <- function(opt){
         gc()
     }
     
-    options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
+    options(future.globals.maxSize=220 * 1024*1024*1024) ##30G
     plan(multicore, workers = opt$threadsSampling)
 
     ## registerDoParallel(opt$threadsSampling)
@@ -462,7 +466,7 @@ sampleRandomGeneDiseaseAssocation <- function(opt){
 
     
     options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
-    plan(multicore, workers = opt$threads)
+    plan(multicore, workers = opt$threadsSampling)
 
     ## singleSamplingMode is used for generate a single transition rda using sampling
     ## FALSE indicates to generate a batch number. Use FALSE to speed up because it only load GO network and SupraAdjacencyMatrix once;
@@ -561,7 +565,7 @@ FlexNet <- function(opt){
     tau <- lapply(names(layers_list),function(x){getNetworkSpecificParams(x,layers_list,"Restart.Probability",config)})
     names(tau) <- names(layers_list)
 
-    options(future.globals.maxSize=200 * 1024*1024*1024) ##30G
+    options(future.globals.maxSize=1024 * 1024*1024*1024) ##30G
     plan(multicore, workers = opt$threads)
     rlt <- foreach(Seed_File=SeedFileList) %dofuture% { 
         All_Seeds <- read.csv(Seed_File,header=FALSE,sep="\t",dec=".",stringsAsFactors = FALSE)
